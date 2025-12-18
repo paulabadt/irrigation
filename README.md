@@ -3141,42 +3141,6 @@ Response 200 OK:
 3. System Administrator (5 days)
 4. IoT Specialist (2 weeks)
 
----
-
-## 📄 License
-
-This project was developed as part of research and training activities at SENA (National Learning Service) to support sugarcane farmers in Valle del Cauca, Colombia. The code, hardware designs, and documentation are property of SENA and have been recreated for portfolio demonstration purposes.
-
-**License:** Educational and research use only. Commercial deployment requires authorization from SENA.
-
----
-
-## 👥 Contact
-
-**Developer:** Paula Abad  
-**Email:** [paula.abad@email.com](mailto:paula.abad@email.com)  
-**Portfolio:** [www.paulabad.tech](https://www.paulabad.tech)  
-**LinkedIn:** [linkedin.com/in/paula-abad](https://linkedin.com/in/paula-abad)  
-**GitHub:** [github.com/paulabadt](https://github.com/paulabadt)
-
-**Project Support:**
-- **Technical Support:** techsupport@smartcane.sena.edu.co
-- **Farmer Hotline:** +57 (2) 123-4567
-- **SENA Valle del Cauca:** www.sena.edu.co/valleDelCauca
-
----
-
-## 🙏 Acknowledgments
-
-Special thanks to:
-
-- **SENA (Servicio Nacional de Aprendizaje)** for funding and supporting this agricultural technology initiative
-- **Sugarcane farmers of Valle del Cauca** for their collaboration, feedback, and field testing
-- **Asocaña (Colombian Sugarcane Association)** for technical guidance on irrigation requirements
-- **Universidad del Valle** for research collaboration and ML model development
-- **Local agricultural cooperatives** for facilitating farmer training and system deployment
-
-This project has benefited over 60 sugarcane farmers across Valle del Cauca, demonstrating the positive impact of IoT technology in Colombian agriculture. The water savings achieved contribute to regional water conservation efforts while improving crop yields and farmer livelihoods.
 
 ---
 
@@ -3229,14 +3193,6 @@ This project has benefited over 60 sugarcane farmers across Valle del Cauca, dem
 
 <div align="center">
 
-**⚠️ Note:** This project was developed as part of research and training activities at SENA to support sugarcane farmers in Valle del Cauca. The code and documentation are property of SENA and have been recreated for portfolio demonstration purposes.
-
----
-
 **Built with 🌱 for sustainable agriculture in Colombia**
-
-**Technologies:** C++ • Python • MQTT • TensorFlow • IoT • Machine Learning
-
-**Supported by:** SENA Valle del Cauca | Asocaña | Universidad del Valle
 
 </div>
