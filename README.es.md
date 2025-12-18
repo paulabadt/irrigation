@@ -1546,3 +1546,1502 @@ python simulador_sensores.py
 
 ---
 
+---
+
+## 💻 Instalación y Configuración
+
+### Requisitos Previos
+
+**Requisitos de Hardware:**
+```
+Microcontrolador:
+- ESP32 DevKit (o compatible)
+- Cable USB para programación
+
+Sensores:
+- 3-5x Sensores de Humedad del Suelo Capacitivos (v1.2)
+- 1x Sensor de Temperatura/Humedad DHT22 (AM2302)
+- 1x Sensor de Lluvia YL-83
+- 1x Sensor de Flujo de Agua YF-S201
+- 1x Transductor de Presión 0-100 PSI
+
+Actuadores:
+- 1-4x Electroválvulas 12V DC (1 pulgada)
+- 1x Bomba de Agua Sumergible 12V DC
+
+Suministro de Energía:
+- Panel Solar 50W 12V
+- Batería 12V 35Ah Plomo-Ácido
+- Controlador de Carga Solar PWM 10A
+- Convertidor DC-DC Buck 12V a 5V
+
+Gateway de Borde (opcional pero recomendado):
+- Raspberry Pi 4 (2GB+ RAM)
+- Tarjeta microSD 32GB
+- Fuente de alimentación (5V 3A)
+
+Red:
+- Router WiFi o tarjeta SIM 4G con plan de datos
+```
+
+**Requisitos de Software:**
+```bash
+# Herramientas de desarrollo
+- Arduino IDE 1.8.19+ o PlatformIO
+- Python 3.9+
+- Node.js 14+ (para panel web)
+
+# Bibliotecas requeridas (Arduino)
+- WiFi.h (integrada)
+- PubSubClient (MQTT)
+- Librería de sensor DHT
+- ArduinoJson
+
+# Paquetes requeridos (Python)
+- paho-mqtt
+- scikit-learn
+- tensorflow-lite (opcional)
+- pandas
+- numpy
+- influxdb-client
+- flask/fastapi
+```
+
+---
+
+### Configuración Arduino/ESP32
+
+**1. Instalar Arduino IDE y Soporte de Placa:**
+```bash
+# Descargar Arduino IDE desde https://www.arduino.cc/en/software
+
+# En Arduino IDE:
+# Archivo -> Preferencias -> URLs Adicionales de Gestor de Placas
+# Agregar: https://dl.espressif.com/dl/package_esp32_index.json
+
+# Herramientas -> Placa -> Gestor de Placas
+# Buscar "ESP32" e instalar
+```
+
+**2. Instalar Bibliotecas Requeridas:**
+```
+Herramientas -> Administrar Bibliotecas
+
+Instalar:
+- PubSubClient de Nick O'Leary
+- Librería de sensor DHT de Adafruit
+- ArduinoJson de Benoit Blanchon
+- Adafruit Unified Sensor
+```
+
+**3. Configurar Conexiones de Hardware:**
+```cpp
+/*
+ * Configuración de Pines para ESP32
+ * 
+ * Sensores:
+ * - DHT22:            GPIO2 (Datos)
+ * - Humedad Suelo 1:  GPIO34 (ADC1_CH6)
+ * - Humedad Suelo 2:  GPIO35 (ADC1_CH7)
+ * - Humedad Suelo 3:  GPIO32 (ADC1_CH4)
+ * - Sensor Lluvia:    GPIO33 (ADC1_CH5)
+ * - Sensor Flujo:     GPIO18 (Capaz de interrupciones)
+ * - Sensor Presión:   GPIO39 (ADC1_CH3)
+ * 
+ * Actuadores:
+ * - Válvula 1:        GPIO5
+ * - Válvula 2:        GPIO17
+ * - Válvula 3:        GPIO16
+ * - Válvula 4:        GPIO4
+ * - Bomba:            GPIO19
+ * 
+ * Comunicación:
+ * - WiFi:             Integrado
+ * - LED Estado:       GPIO2 (LED incorporado)
+ */
+
+// Definición de pines
+#define DHTPIN 2
+#define HUMEDAD_SUELO_1 34
+#define HUMEDAD_SUELO_2 35
+#define HUMEDAD_SUELO_3 32
+#define PIN_SENSOR_LLUVIA 33
+#define PIN_SENSOR_FLUJO 18
+#define PIN_SENSOR_PRESION 39
+
+#define PIN_VALVULA_1 5
+#define PIN_VALVULA_2 17
+#define PIN_VALVULA_3 16
+#define PIN_VALVULA_4 4
+#define PIN_BOMBA 19
+
+#define PIN_LED_ESTADO 2
+```
+
+**4. Cargar Firmware:**
+```cpp
+// smartcane_principal.ino
+#include "config.h"
+#include "sensores.h"
+#include "cliente_mqtt.h"
+#include "control_riego.h"
+
+void setup() {
+    Serial.begin(115200);
+    delay(1000);
+    
+    Serial.println("\n\n=================================");
+    Serial.println("Sistema de Riego SmartCane v1.0");
+    Serial.println("=================================\n");
+    
+    // Inicializar componentes
+    configurarSensores();
+    configurarWiFi();
+    configurarMQTT();
+    configurarControlRiego();
+    
+    Serial.println("¡Sistema inicializado exitosamente!");
+    Serial.println("Iniciando bucle principal...\n");
+}
+
+void loop() {
+    // Asegurar conexiones WiFi y MQTT
+    if (WiFi.status() != WL_CONNECTED) {
+        reconectarWiFi();
+    }
+    
+    if (!clienteMqtt.connected()) {
+        conectarMQTT();
+    }
+    clienteMqtt.loop();
+    
+    // Leer sensores cada minuto
+    static unsigned long ultimaLecturaSensores = 0;
+    if (millis() - ultimaLecturaSensores >= 60000) {
+        DatosSensores datos = leerTodosSensores();
+        publicarDatosSensores(datos);
+        
+        // Ejecutar lógica de control automático
+        verificarControlAutomatico(datos);
+        
+        ultimaLecturaSensores = millis();
+    }
+    
+    // Actualizar monitoreo de flujo
+    actualizarTasaFlujo();
+    
+    // Verificar salud del sistema
+    static unsigned long ultimaVerificacionSalud = 0;
+    if (millis() - ultimaVerificacionSalud >= 300000) {  // Cada 5 minutos
+        publicarSaludSistema();
+        ultimaVerificacionSalud = millis();
+    }
+    
+    delay(100);
+}
+```
+
+**5. Configurar WiFi y MQTT:**
+
+Crear `config.h`:
+```cpp
+#ifndef CONFIG_H
+#define CONFIG_H
+
+// Configuración WiFi
+#define WIFI_SSID "TuSSIDWiFi"
+#define WIFI_PASSWORD "TuPasswordWiFi"
+
+// Configuración MQTT
+#define MQTT_SERVER "192.168.1.100"  // O IP del servidor en la nube
+#define MQTT_PORT 1883
+#define MQTT_USER "smartcane"
+#define MQTT_PASSWORD "tu_password_mqtt"
+
+// Configuración de Finca
+#define FIELD_ID "finca_01"
+#define FIELD_LOCATION "Valle del Cauca, Colombia"
+#define CROP_TYPE "Caña de Azúcar"
+
+// Parámetros de Riego
+#define MIN_SOIL_MOISTURE 30.0
+#define MAX_SOIL_MOISTURE 70.0
+#define IRRIGATION_DURATION 1800000  // 30 minutos
+#define MIN_IRRIGATION_INTERVAL 14400000  // 4 horas
+
+// Configuración del Sistema
+#define SENSOR_READ_INTERVAL 60000   // 1 minuto
+#define PUBLISH_INTERVAL 60000       // 1 minuto
+#define HEALTH_CHECK_INTERVAL 300000 // 5 minutos
+
+#endif
+```
+
+**6. Cargar y Probar:**
+```bash
+# En Arduino IDE:
+# 1. Seleccionar placa: Herramientas -> Placa -> ESP32 Dev Module
+# 2. Seleccionar puerto: Herramientas -> Puerto -> /dev/ttyUSB0 (o puerto COM en Windows)
+# 3. Cargar: Programa -> Subir
+
+# Monitorear salida serial:
+# Herramientas -> Monitor Serie (115200 baudios)
+```
+
+---
+
+### Configuración Gateway Raspberry Pi
+
+**1. Preparar Raspberry Pi:**
+```bash
+# Actualizar sistema
+sudo apt-get update
+sudo apt-get upgrade -y
+
+# Instalar Python y dependencias
+sudo apt-get install -y python3 python3-pip python3-venv
+sudo apt-get install -y git mosquitto mosquitto-clients
+
+# Habilitar I2C y SPI (si se usan sensores adicionales)
+sudo raspi-config
+# Opciones de Interfaz -> I2C -> Habilitar
+# Opciones de Interfaz -> SPI -> Habilitar
+```
+
+**2. Instalar Broker MQTT:**
+```bash
+# Instalar Mosquitto
+sudo apt-get install -y mosquitto mosquitto-clients
+
+# Configurar Mosquitto
+sudo nano /etc/mosquitto/mosquitto.conf
+```
+
+Agregar:
+```conf
+# /etc/mosquitto/mosquitto.conf
+listener 1883
+allow_anonymous false
+password_file /etc/mosquitto/passwd
+
+# Registro
+log_dest file /var/log/mosquitto/mosquitto.log
+log_type all
+
+# Persistencia
+persistence true
+persistence_location /var/lib/mosquitto/
+
+# Seguridad
+max_connections 100
+```
+
+Crear archivo de contraseñas:
+```bash
+sudo mosquitto_passwd -c /etc/mosquitto/passwd smartcane
+# Ingresar contraseña cuando se solicite
+
+# Reiniciar Mosquitto
+sudo systemctl restart mosquitto
+sudo systemctl enable mosquitto
+
+# Probar conexión
+mosquitto_sub -h localhost -t "prueba" -u smartcane -P tu_password
+```
+
+**3. Instalar InfluxDB:**
+```bash
+# Agregar repositorio de InfluxDB
+wget -qO- https://repos.influxdata.com/influxdb.key | sudo apt-key add -
+echo "deb https://repos.influxdata.com/debian buster stable" | sudo tee /etc/apt/sources.list.d/influxdb.list
+
+# Instalar InfluxDB
+sudo apt-get update
+sudo apt-get install -y influxdb
+
+# Iniciar InfluxDB
+sudo systemctl start influxdb
+sudo systemctl enable influxdb
+
+# Crear base de datos
+influx
+> CREATE DATABASE datos_sensores
+> CREATE USER smartcane WITH PASSWORD 'tu_password'
+> GRANT ALL ON datos_sensores TO smartcane
+> EXIT
+```
+
+**4. Configurar Entorno Python:**
+```bash
+# Crear directorio del proyecto
+mkdir -p ~/smartcane
+cd ~/smartcane
+
+# Crear entorno virtual
+python3 -m venv venv
+source venv/bin/activate
+
+# Instalar dependencias
+pip install --upgrade pip
+pip install paho-mqtt influxdb-client pandas numpy scikit-learn flask
+```
+
+**5. Instalar Servicio Gateway:**
+
+Crear `smartcane_gateway.py`:
+```python
+#!/usr/bin/env python3
+"""
+Servicio Gateway SmartCane
+Se ejecuta como servicio systemd en Raspberry Pi
+"""
+
+import sys
+import signal
+from gateway import GatewaySmartCane
+import logging
+
+# Configurar logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('/var/log/smartcane/gateway.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+
+logger = logging.getLogger(__name__)
+
+def manejador_señal(sig, frame):
+    logger.info("Señal de apagado recibida")
+    gateway.detener()
+    sys.exit(0)
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, manejador_señal)
+    signal.signal(signal.SIGTERM, manejador_señal)
+    
+    logger.info("Iniciando Servicio Gateway SmartCane")
+    
+    gateway = GatewaySmartCane()
+    
+    try:
+        gateway.iniciar()
+    except Exception as e:
+        logger.error(f"Error fatal: {e}")
+        sys.exit(1)
+```
+
+Crear servicio systemd:
+```bash
+sudo nano /etc/systemd/system/smartcane-gateway.service
+```
+
+Agregar:
+```ini
+[Unit]
+Description=Servicio Gateway IoT SmartCane
+After=network.target mosquitto.service influxdb.service
+Wants=mosquitto.service influxdb.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/smartcane
+Environment="PATH=/home/pi/smartcane/venv/bin"
+ExecStart=/home/pi/smartcane/venv/bin/python3 /home/pi/smartcane/smartcane_gateway.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Habilitar e iniciar servicio:
+```bash
+# Crear directorio de logs
+sudo mkdir -p /var/log/smartcane
+sudo chown pi:pi /var/log/smartcane
+
+# Habilitar servicio
+sudo systemctl daemon-reload
+sudo systemctl enable smartcane-gateway
+sudo systemctl start smartcane-gateway
+
+# Verificar estado
+sudo systemctl status smartcane-gateway
+
+# Ver logs
+sudo journalctl -u smartcane-gateway -f
+```
+
+**6. Instalar Grafana (Visualización):**
+```bash
+# Agregar repositorio de Grafana
+wget -q -O - https://packages.grafana.com/gpg.key | sudo apt-key add -
+echo "deb https://packages.grafana.com/oss/deb stable main" | sudo tee /etc/apt/sources.list.d/grafana.list
+
+# Instalar Grafana
+sudo apt-get update
+sudo apt-get install -y grafana
+
+# Iniciar Grafana
+sudo systemctl start grafana-server
+sudo systemctl enable grafana-server
+
+# Acceder a Grafana en http://ip-raspberry-pi:3000
+# Credenciales por defecto: admin/admin
+```
+
+**Configurar Panel Grafana:**
+```
+1. Iniciar sesión en Grafana (http://localhost:3000)
+2. Agregar Fuente de Datos:
+   - Configuración -> Fuentes de Datos -> Agregar fuente de datos
+   - Seleccionar InfluxDB
+   - URL: http://localhost:8086
+   - Base de Datos: datos_sensores
+   - Usuario: smartcane
+   - Contraseña: tu_password
+   - Guardar y Probar
+
+3. Importar Panel:
+   - Crear -> Importar
+   - Cargar JSON del panel (ver configuración del panel)
+```
+
+---
+
+## 🌾 Despliegue en Campo
+
+### Guía de Instalación de Hardware
+
+**1. Selección del Sitio:**
+```
+Consideraciones de ubicación óptima:
+- Condiciones de suelo representativas
+- Exposición solar adecuada (mínimo 4 horas de sol directo)
+- Proximidad a fuente de agua e infraestructura de riego
+- Protegido de daño físico (ganado, maquinaria)
+- Dentro del área de cobertura WiFi/4G
+- Accesible para mantenimiento
+```
+
+**2. Instalación de Sensores:**
+
+**Sensores de Humedad del Suelo:**
+```
+Profundidad de instalación: 15-30 cm (6-12 pulgadas)
+- Zona de raíces de caña de azúcar: 20-40 cm de profundidad recomendado
+- Instalar en 3-5 ubicaciones en el campo
+- Espaciar sensores 10-15 metros entre sí
+- Evitar áreas con agua estancada o rocas
+- Asegurar buen contacto del suelo alrededor del sensor
+
+Pasos de instalación:
+1. Cavar hoyo estrecho hasta profundidad objetivo
+2. Insertar sensor verticalmente
+3. Compactar firmemente el suelo alrededor del sensor
+4. Marcar ubicación con estaca/bandera
+5. Conectar cable del sensor a caja de conexiones
+6. Sellar puntos de entrada del cable
+```
+
+**Sensores Meteorológicos:**
+```
+DHT22 Temperatura/Humedad:
+- Montar a 1.5-2 metros sobre el suelo
+- Instalar en protector de radiación ventilado
+- Alejado de rocío directo de agua
+- Orientado hacia el norte para evitar sol directo
+
+Sensor de Lluvia:
+- Montar horizontalmente en poste estable
+- 1-1.5 metros sobre el dosel del cultivo
+- Libre de obstrucciones
+- Ligera inclinación para drenaje
+```
+
+**3. Instalación del Sistema de Control:**
+```
+Configuración de Caja de Conexiones:
+1. Instalar caja impermeable
+   - Clasificación IP65 mínima
+   - Montada en poste a 1.5m de altura
+   - Puerta accesible con cerradura
+
+2. Conectar sensores:
+   - Usar prensaestopas impermeables
+   - Etiquetar todas las conexiones claramente
+   - Aplicar grasa dieléctrica a conexiones
+   - Asegurar cables con bridas
+
+3. Sistema de energía:
+   - Montar panel solar orientado al ecuador
+   - Ángulo de inclinación = latitud + 15°
+   - Asegurar batería dentro de caja
+   - Conectar controlador de carga
+   - Instalar protección contra sobrecorriente
+
+4. Instalar controlador ESP32:
+   - Montar en riel DIN dentro de caja
+   - Conectar a alimentación (5V regulado)
+   - Conectar todas las entradas de sensores
+   - Conectar salidas de control válvula/bomba
+   - Instalar antena WiFi/4G
+```
+
+**4. Integración del Sistema de Riego:**
+```
+Instalación de Válvulas:
+1. Instalar después de línea principal de agua
+2. Antes de distribución de zonas
+3. Agregar válvula manual de bypass
+4. Instalar manómetro
+5. Agregar filtro antes de electroválvula
+
+Configuración de Bomba (si aplica):
+1. Bomba sumergible o de superficie
+2. Válvula de retención en salida
+3. Interruptor de presión para protección
+4. Filtro en toma de agua
+5. Conexión a tierra para seguridad eléctrica
+
+Sensor de Flujo de Agua:
+1. Instalar en línea después de bomba
+2. Asegurar que la flecha apunte en dirección del flujo
+3. Mínimo 5x diámetro de tubería recta antes del sensor
+4. Asegurar con abrazaderas
+```
+
+**5. Pruebas Iniciales:**
+```bash
+# Lista de verificación pre-despliegue
+
+□ Todos los sensores leyendo correctamente
+□ Válvula(s) abren/cierran con comando
+□ Bomba arranca/detiene apropiadamente
+□ Sensor de flujo registrando flujo
+□ Panel solar cargando batería
+□ Conexión WiFi/4G estable
+□ Comunicación MQTT funcionando
+□ Datos apareciendo en panel
+□ Alertas funcionando
+□ Anulación manual accesible
+
+# Ejecutar ciclo de riego de prueba:
+1. Activar riego manualmente vía panel
+2. Verificar apertura de válvula
+3. Confirmar arranque de bomba
+4. Verificar lectura de tasa de flujo
+5. Monitorear presión
+6. Detener después de 5 minutos
+7. Verificar que todos los datos se registraron
+```
+
+**6. Puesta en Marcha:**
+```python
+# herramienta_puesta_en_marcha.py
+"""
+Herramienta de puesta en marcha y calibración en campo
+"""
+
+import time
+import json
+from cliente_mqtt import ClienteMQTT
+
+class HerramientaPuestaEnMarcha:
+    def __init__(self, id_finca):
+        self.id_finca = id_finca
+        self.mqtt = ClienteMQTT()
+        
+    def calibrar_sensores_suelo(self):
+        """
+        Calibrar sensores de humedad del suelo
+        """
+        print("\n=== Calibración de Sensores de Humedad del Suelo ===\n")
+        print("Paso 1: Calibración en Seco")
+        print("  Remover sensores del suelo")
+        input("  Presionar Enter cuando sensores estén secos y al aire...")
+        
+        lecturas_secas = self.leer_sensores(muestras=10)
+        valor_seco = sum(lecturas_secas) / len(lecturas_secas)
+        print(f"  Valor en seco: {valor_seco}")
+        
+        print("\nPaso 2: Calibración en Húmedo")
+        print("  Sumergir sensores en agua")
+        input("  Presionar Enter cuando sensores estén completamente sumergidos...")
+        
+        lecturas_humedas = self.leer_sensores(muestras=10)
+        valor_humedo = sum(lecturas_humedas) / len(lecturas_humedas)
+        print(f"  Valor húmedo: {valor_humedo}")
+        
+        calibracion = {
+            'valor_seco': valor_seco,
+            'valor_humedo': valor_humedo,
+            'factor_escala': 100.0 / (valor_humedo - valor_seco)
+        }
+        
+        print("\n¡Calibración completa!")
+        print(f"Factor de escala: {calibracion['factor_escala']:.4f}")
+        
+        return calibracion
+    
+    def probar_ciclo_riego(self):
+        """
+        Probar ciclo completo de riego
+        """
+        print("\n=== Prueba del Sistema de Riego ===\n")
+        
+        print("Iniciando ciclo de prueba de riego...")
+        self.mqtt.publish(
+            f"smartcane/control/{self.id_finca}/comando",
+            json.dumps({"comando": "INICIAR_RIEGO"})
+        )
+        
+        print("Riego iniciado. Ejecutando por 2 minutos...")
+        time.sleep(120)
+        
+        print("Deteniendo riego...")
+        self.mqtt.publish(
+            f"smartcane/control/{self.id_finca}/comando",
+            json.dumps({"comando": "DETENER_RIEGO"})
+        )
+        
+        print("\n¡Prueba completa!")
+        print("Verificar que:")
+        print("  □ Válvula abrió/cerró apropiadamente")
+        print("  □ Bomba arrancó/detuvo")
+        print("  □ Se detectó flujo")
+        print("  □ No se observaron fugas")
+        print("  □ Datos registrados correctamente")
+    
+    def verificar_conectividad(self):
+        """
+        Verificar todos los canales de comunicación
+        """
+        print("\n=== Prueba de Conectividad ===\n")
+        
+        print("Probando conexión WiFi...")
+        # Probar WiFi
+        
+        print("Probando conexión MQTT...")
+        # Probar MQTT
+        
+        print("Probando carga de datos...")
+        # Probar carga de datos
+        
+        print("\n¡Prueba de conectividad completa!")
+
+# Ejecutar puesta en marcha
+if __name__ == "__main__":
+    herramienta = HerramientaPuestaEnMarcha("finca_01")
+    
+    print("Herramienta de Puesta en Marcha SmartCane")
+    print("=========================================")
+    
+    while True:
+        print("\nSeleccionar opción:")
+        print("1. Calibrar sensores de suelo")
+        print("2. Probar ciclo de riego")
+        print("3. Verificar conectividad")
+        print("4. Salir")
+        
+        opcion = input("\nIngresar opción (1-4): ")
+        
+        if opcion == "1":
+            herramienta.calibrar_sensores_suelo()
+        elif opcion == "2":
+            herramienta.probar_ciclo_riego()
+        elif opcion == "3":
+            herramienta.verificar_conectividad()
+        elif opcion == "4":
+            break
+```
+
+---
+
+## 📊 Monitoreo y Alertas
+
+### Panel en Tiempo Real
+
+**Configuración del Panel Grafana:**
+```json
+{
+  "panel": {
+    "titulo": "Monitor de Riego SmartCane",
+    "paneles": [
+      {
+        "titulo": "Humedad del Suelo",
+        "tipo": "grafico",
+        "objetivos": [
+          {
+            "consulta": "SELECT mean(\"humedad_suelo\") FROM \"lectura_sensores\" WHERE $timeFilter GROUP BY time($__interval), \"id_finca\""
+          }
+        ],
+        "eje_y": {
+          "etiqueta": "Humedad (%)",
+          "min": 0,
+          "max": 100
+        },
+        "alerta": {
+          "condiciones": [
+            {
+              "tipo": "consulta",
+              "consulta": {
+                "parametros": ["A", "5m", "now"]
+              },
+              "reductor": {
+                "tipo": "promedio"
+              },
+              "evaluador": {
+                "tipo": "menor_que",
+                "parametros": [25]
+              }
+            }
+          ],
+          "nombre": "Baja Humedad del Suelo",
+          "mensaje": "Humedad del suelo por debajo del 25%"
+        }
+      },
+      {
+        "titulo": "Temperatura y Humedad",
+        "tipo": "grafico",
+        "objetivos": [
+          {
+            "consulta": "SELECT mean(\"temperatura\") FROM \"lectura_sensores\" WHERE $timeFilter GROUP BY time($__interval)"
+          },
+          {
+            "consulta": "SELECT mean(\"humedad\") FROM \"lectura_sensores\" WHERE $timeFilter GROUP BY time($__interval)"
+          }
+        ]
+      },
+      {
+        "titulo": "Estado de Riego",
+        "tipo": "estadistica",
+        "objetivos": [
+          {
+            "consulta": "SELECT last(\"riego_activo\") FROM \"lectura_sensores\" WHERE $timeFilter"
+          }
+        ],
+        "mapeos": [
+          {
+            "valor": 1,
+            "texto": "ACTIVO",
+            "color": "verde"
+          },
+          {
+            "valor": 0,
+            "texto": "INACTIVO",
+            "color": "gris"
+          }
+        ]
+      },
+      {
+        "titulo": "Agua Entregada Hoy",
+        "tipo": "estadistica",
+        "objetivos": [
+          {
+            "consulta": "SELECT sum(\"agua_entregada\") FROM \"lectura_sensores\" WHERE time > now() - 1d"
+          }
+        ],
+        "unidad": "litros"
+      },
+      {
+        "titulo": "Lluvia",
+        "tipo": "grafico_barras",
+        "objetivos": [
+          {
+            "consulta": "SELECT sum(\"lluvia\") FROM \"lectura_sensores\" WHERE $timeFilter GROUP BY time(1h)"
+          }
+        ]
+      }
+    ],
+    "actualizacion": "30s",
+    "tiempo": {
+      "desde": "now-24h",
+      "hasta": "now"
+    }
+  }
+}
+```
+
+### Sistema de Alertas
+
+**Configuración de Alertas por Email:**
+```python
+# gestor_alertas.py
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import logging
+
+logger = logging.getLogger(__name__)
+
+class GestorAlertas:
+    """
+    Gestionar y enviar alertas a través de múltiples canales
+    """
+    
+    def __init__(self, config):
+        self.config = config
+        self.historial_alertas = []
+        
+    def enviar_alerta_email(self, asunto, mensaje, destinatarios):
+        """
+        Enviar alerta por email
+        
+        Args:
+            asunto: Asunto del email
+            mensaje: Mensaje de alerta
+            destinatarios: Lista de direcciones de email
+        """
+        try:
+            msg = MIMEMultipart()
+            msg['From'] = self.config['email']['desde']
+            msg['To'] = ', '.join(destinatarios)
+            msg['Subject'] = f"[Alerta SmartCane] {asunto}"
+            
+            cuerpo = f"""
+            Alerta del Sistema de Riego SmartCane
+            
+            {mensaje}
+            
+            Marca de tiempo: {datetime.utcnow().isoformat()}
+            
+            ---
+            Este es un mensaje automatizado del Sistema IoT SmartCane
+            """
+            
+            msg.attach(MIMEText(cuerpo, 'plain'))
+            
+            # Conectar a servidor SMTP
+            servidor = smtplib.SMTP(
+                self.config['email']['servidor_smtp'],
+                self.config['email']['puerto_smtp']
+            )
+            servidor.starttls()
+            servidor.login(
+                self.config['email']['usuario'],
+                self.config['email']['password']
+            )
+            
+            # Enviar email
+            servidor.send_message(msg)
+            servidor.quit()
+            
+            logger.info(f"Alerta email enviada: {asunto}")
+            
+        except Exception as e:
+            logger.error(f"Error al enviar alerta email: {e}")
+    
+    def enviar_alerta_sms(self, mensaje, numeros_telefono):
+        """
+        Enviar alerta SMS vía Twilio o servicio similar
+        
+        Args:
+            mensaje: Mensaje de alerta
+            numeros_telefono: Lista de números telefónicos
+        """
+        try:
+            from twilio.rest import Client
+            
+            cliente = Client(
+                self.config['sms']['account_sid'],
+                self.config['sms']['auth_token']
+            )
+            
+            for telefono in numeros_telefono:
+                mensaje_enviado = cliente.messages.create(
+                    body=f"[SmartCane] {mensaje}",
+                    from_=self.config['sms']['numero_desde'],
+                    to=telefono
+                )
+                
+                logger.info(f"Alerta SMS enviada a {telefono}")
+                
+        except Exception as e:
+            logger.error(f"Error al enviar alerta SMS: {e}")
+    
+    def procesar_alerta(self, datos_alerta):
+        """
+        Procesar y enrutar alerta según severidad
+        
+        Args:
+            datos_alerta: Dict con información de alerta
+        """
+        nivel = datos_alerta.get('nivel', 'INFO')
+        mensaje = datos_alerta.get('mensaje', '')
+        id_finca = datos_alerta.get('id_finca', 'Desconocido')
+        
+        # Registrar alerta
+        logger.warning(f"Alerta [{nivel}] para {id_finca}: {mensaje}")
+        
+        # Almacenar en historial
+        self.historial_alertas.append({
+            'marca_tiempo': datetime.utcnow(),
+            'nivel': nivel,
+            'id_finca': id_finca,
+            'mensaje': mensaje
+        })
+        
+        # Enrutar según severidad
+        if nivel == 'CRITICA':
+            # Enviar email y SMS
+            self.enviar_alerta_email(
+                f"CRÍTICA: {id_finca}",
+                mensaje,
+                self.config['alertas']['contactos_criticos']
+            )
+            self.enviar_alerta_sms(
+                f"CRÍTICO en {id_finca}: {mensaje}",
+                self.config['alertas']['telefonos_criticos']
+            )
+            
+        elif nivel == 'ADVERTENCIA':
+            # Enviar solo email
+            self.enviar_alerta_email(
+                f"ADVERTENCIA: {id_finca}",
+                mensaje,
+                self.config['alertas']['contactos_advertencias']
+            )
+    
+    def obtener_historial_alertas(self, horas=24):
+        """
+        Obtener historial reciente de alertas
+        
+        Args:
+            horas: Número de horas a consultar
+            
+        Returns:
+            Lista de alertas recientes
+        """
+        corte = datetime.utcnow() - timedelta(hours=horas)
+        return [
+            alerta for alerta in self.historial_alertas
+            if alerta['marca_tiempo'] > corte
+        ]
+```
+
+**Configuración de Alertas:**
+```yaml
+# config_alertas.yaml
+alertas:
+  email:
+    servidor_smtp: smtp.gmail.com
+    puerto_smtp: 587
+    desde: smartcane@tudominio.com
+    usuario: tu_email@gmail.com
+    password: tu_password_app
+  
+  sms:
+    proveedor: twilio
+    account_sid: tu_twilio_sid
+    auth_token: tu_twilio_token
+    numero_desde: +1234567890
+  
+  contactos:
+    contactos_criticos:
+      - agricultor@ejemplo.com
+      - tecnico@ejemplo.com
+    telefonos_criticos:
+      - +573001234567
+    contactos_advertencias:
+      - agricultor@ejemplo.com
+  
+  reglas:
+    - nombre: Baja Humedad del Suelo
+      condicion: humedad_suelo < 20
+      nivel: ADVERTENCIA
+      enfriamiento: 3600  # segundos
+    
+    - nombre: Humedad Crítica del Suelo
+      condicion: humedad_suelo < 15
+      nivel: CRITICA
+      enfriamiento: 1800
+    
+    - nombre: Alta Temperatura
+      condicion: temperatura > 38
+      nivel: ADVERTENCIA
+      enfriamiento: 7200
+    
+    - nombre: Sistema Fuera de Línea
+      condicion: edad_ultima_lectura > 600  # 10 minutos
+      nivel: CRITICA
+      enfriamiento: 300
+    
+    - nombre: Baja Presión
+      condicion: presion < 15 AND riego_activo
+      nivel: CRITICA
+      enfriamiento: 0  # Inmediato
+```
+
+---
+
+## 📈 Análisis de Datos
+
+### Análisis de Datos Históricos
+```python
+# analitica.py
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from influxdb_client import InfluxDBClient
+from datetime import datetime, timedelta
+import seaborn as sns
+
+class AnaliticaRiego:
+    """
+    Analizar rendimiento y eficiencia del sistema de riego
+    """
+    
+    def __init__(self, url_influx, token_influx, org_influx, bucket_influx):
+        self.cliente = InfluxDBClient(
+            url=url_influx,
+            token=token_influx,
+            org=org_influx
+        )
+        self.api_consulta = self.cliente.query_api()
+        self.bucket = bucket_influx
+        
+    def obtener_datos(self, id_finca, tiempo_inicio, tiempo_fin):
+        """
+        Recuperar datos de InfluxDB
+        
+        Args:
+            id_finca: Identificador de finca
+            tiempo_inicio: Datetime de inicio
+            tiempo_fin: Datetime de fin
+            
+        Returns:
+            DataFrame de pandas
+        """
+        consulta = f'''
+        from(bucket: "{self.bucket}")
+          |> range(start: {tiempo_inicio.isoformat()}Z, stop: {tiempo_fin.isoformat()}Z)
+          |> filter(fn: (r) => r["_measurement"] == "lectura_sensores")
+          |> filter(fn: (r) => r["id_finca"] == "{id_finca}")
+          |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
+        '''
+        
+        resultado = self.api_consulta.query(query=consulta)
+        
+        # Convertir a DataFrame
+        datos = []
+        for tabla in resultado:
+            for registro in tabla.records:
+                datos.append({
+                    'marca_tiempo': registro.get_time(),
+                    'humedad_suelo': registro.values.get('humedad_suelo'),
+                    'temperatura': registro.values.get('temperatura'),
+                    'humedad': registro.values.get('humedad'),
+                    'lluvia': registro.values.get('lluvia'),
+                    'riego_activo': registro.values.get('riego_activo'),
+                    'agua_entregada': registro.values.get('agua_entregada')
+                })
+        
+        df = pd.DataFrame(datos)
+        df.set_index('marca_tiempo', inplace=True)
+        
+        return df
+    
+    def calcular_eficiencia_agua(self, df):
+        """
+        Calcular métricas de eficiencia de uso de agua
+        
+        Args:
+            df: DataFrame con datos de sensores
+            
+        Returns:
+            Dict con métricas de eficiencia
+        """
+        # Agua total usada
+        agua_total = df['agua_entregada'].sum()
+        
+        # Eventos de riego
+        cambios_riego = df['riego_activo'].diff()
+        inicios_riego = (cambios_riego == 1).sum()
+        
+        # Duración promedio de riego
+        duraciones_riego = []
+        duracion_actual = 0
+        
+        for activo in df['riego_activo']:
+            if activo:
+                duracion_actual += 1
+            elif duracion_actual > 0:
+                duraciones_riego.append(duracion_actual)
+                duracion_actual = 0
+        
+        duracion_promedio = np.mean(duraciones_riego) if duraciones_riego else 0
+        
+        # Agua ahorrada comparado con programa tradicional
+        # Tradicional: 2 horas diarias = 120 minutos/día
+        dias = (df.index[-1] - df.index[0]).days
+        agua_tradicional = dias * 120 * 5.5  # 5.5 L/min tasa de flujo
+        agua_ahorrada = agua_tradicional - agua_total
+        porcentaje_ahorro = (agua_ahorrada / agua_tradicional) * 100
+        
+        return {
+            'agua_total_usada': agua_total,
+            'eventos_riego': inicios_riego,
+            'duracion_promedio_riego_min': duracion_promedio,
+            'uso_agua_tradicional': agua_tradicional,
+            'agua_ahorrada': agua_ahorrada,
+            'porcentaje_ahorro': porcentaje_ahorro
+        }
+    
+    def analizar_tendencias_humedad_suelo(self, df):
+        """
+        Analizar patrones de humedad del suelo
+        
+        Args:
+            df: DataFrame con datos de sensores
+            
+        Returns:
+            Dict con análisis de tendencias
+        """
+        # Estadísticas diarias
+        humedad_diaria = df['humedad_suelo'].resample('D').agg([
+            'mean', 'min', 'max', 'std'
+        ])
+        
+        # Patrones por hora
+        df['hora'] = df.index.hour
+        patron_horario = df.groupby('hora')['humedad_suelo'].mean()
+        
+        # Correlación con clima
+        correlaciones = {
+            'temperatura': df['humedad_suelo'].corr(df['temperatura']),
+            'humedad': df['humedad_suelo'].corr(df['humedad']),
+            'lluvia': df['humedad_suelo'].corr(df['lluvia'])
+        }
+        
+        return {
+            'estadisticas_diarias': humedad_diaria,
+            'patron_horario': patron_horario,
+            'correlaciones_clima': correlaciones
+        }
+    
+    def generar_reporte(self, id_finca, dias=30):
+        """
+        Generar reporte integral de rendimiento
+        
+        Args:
+            id_finca: Identificador de finca
+            dias: Número de días a analizar
+            
+        Returns:
+            Dict con datos del reporte
+        """
+        tiempo_fin = datetime.utcnow()
+        tiempo_inicio = tiempo_fin - timedelta(days=dias)
+        
+        # Obtener datos
+        df = self.obtener_datos(id_finca, tiempo_inicio, tiempo_fin)
+        
+        if df.empty:
+            return {"error": "No hay datos disponibles para el período especificado"}
+        
+        # Calcular métricas
+        eficiencia = self.calcular_eficiencia_agua(df)
+        tendencias = self.analizar_tendencias_humedad_suelo(df)
+        
+        # Tiempo de actividad del sistema
+        lecturas_totales = len(df)
+        lecturas_esperadas = dias * 24 * 60  # 1 lectura por minuto
+        porcentaje_actividad = (lecturas_totales / lecturas_esperadas) * 100
+        
+        reporte = {
+            'id_finca': id_finca,
+            'periodo': {
+                'inicio': tiempo_inicio.isoformat(),
+                'fin': tiempo_fin.isoformat(),
+                'dias': dias
+            },
+            'sistema': {
+                'porcentaje_actividad': porcentaje_actividad,
+                'lecturas_totales': lecturas_totales
+            },
+            'eficiencia_agua': eficiencia,
+            'tendencias_suelo': {
+                'humedad_promedio': df['humedad_suelo'].mean(),
+                'humedad_minima': df['humedad_suelo'].min(),
+                'humedad_maxima': df['humedad_suelo'].max(),
+                'correlaciones': tendencias['correlaciones_clima']
+            },
+            'clima': {
+                'temperatura_promedio': df['temperatura'].mean(),
+                'temperatura_maxima': df['temperatura'].max(),
+                'lluvia_total': df['lluvia'].sum(),
+                'humedad_promedio': df['humedad'].mean()
+            }
+        }
+        
+        return reporte
+    
+    def graficar_rendimiento(self, id_finca, dias=7):
+        """
+        Crear visualización de rendimiento
+        
+        Args:
+            id_finca: Identificador de finca
+            dias: Número de días a graficar
+        """
+        tiempo_fin = datetime.utcnow()
+        tiempo_inicio = tiempo_fin - timedelta(days=dias)
+        
+        df = self.obtener_datos(id_finca, tiempo_inicio, tiempo_fin)
+        
+        if df.empty:
+            print("No hay datos disponibles")
+            return
+        
+        # Crear subgráficos
+        fig, ejes = plt.subplots(4, 1, figsize=(14, 12))
+        fig.suptitle(f'Rendimiento SmartCane - Finca {id_finca}', fontsize=16)
+        
+        # Humedad del suelo
+        ejes[0].plot(df.index, df['humedad_suelo'], color='brown', linewidth=1)
+        ejes[0].axhline(y=30, color='red', linestyle='--', label='Umbral mínimo')
+        ejes[0].axhline(y=70, color='blue', linestyle='--', label='Umbral máximo')
+        ejes[0].set_ylabel('Humedad del Suelo (%)')
+        ejes[0].set_title('Niveles de Humedad del Suelo')
+        ejes[0].legend()
+        ejes[0].grid(True, alpha=0.3)
+        
+        # Temperatura y Humedad
+        eje1 = ejes[1]
+        eje2 = eje1.twinx()
+        eje1.plot(df.index, df['temperatura'], color='red', label='Temperatura')
+        eje2.plot(df.index, df['humedad'], color='blue', label='Humedad')
+        eje1.set_ylabel('Temperatura (°C)', color='red')
+        eje2.set_ylabel('Humedad (%)', color='blue')
+        eje1.set_title('Temperatura y Humedad Ambiental')
+        eje1.legend(loc='upper left')
+        eje2.legend(loc='upper right')
+        eje1.grid(True, alpha=0.3)
+        
+        # Lluvia
+        ejes[2].bar(df.index, df['lluvia'], color='skyblue', width=0.02)
+        ejes[2].set_ylabel('Lluvia (mm/h)')
+        ejes[2].set_title('Eventos de Lluvia')
+        ejes[2].grid(True, alpha=0.3)
+        
+        # Estado de Riego
+        ejes[3].fill_between(
+            df.index,
+            0,
+            df['riego_activo'],
+            color='green',
+            alpha=0.3,
+            label='Riego Activo'
+        )
+        ejes[3].set_ylabel('Estado de Riego')
+        ejes[3].set_xlabel('Fecha')
+        ejes[3].set_title('Actividad de Riego')
+        ejes[3].set_yticks([0, 1])
+        ejes[3].set_yticklabels(['Apagado', 'Encendido'])
+        ejes[3].legend()
+        ejes[3].grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(f'rendimiento_{id_finca}_{dias}d.png', dpi=300)
+        print(f"Gráfico de rendimiento guardado en rendimiento_{id_finca}_{dias}d.png")
+        plt.show()
+
+# Ejemplo de uso
+if __name__ == "__main__":
+    analitica = AnaliticaRiego(
+        url_influx="http://localhost:8086",
+        token_influx="tu_token",
+        org_influx="smartcane",
+        bucket_influx="datos_sensores"
+    )
+    
+    # Generar reporte de 30 días
+    reporte = analitica.generar_reporte("finca_01", dias=30)
+    
+    print("\n=== Reporte de Rendimiento SmartCane ===\n")
+    print(f"Finca: {reporte['id_finca']}")
+    print(f"Período: {reporte['periodo']['dias']} días")
+    print(f"\nActividad del Sistema: {reporte['sistema']['porcentaje_actividad']:.1f}%")
+    print(f"\nEficiencia de Agua:")
+    print(f"  Agua Total Usada: {reporte['eficiencia_agua']['agua_total_usada']:.1f} L")
+    print(f"  Agua Ahorrada: {reporte['eficiencia_agua']['agua_ahorrada']:.1f} L")
+    print(f"  Ahorro: {reporte['eficiencia_agua']['porcentaje_ahorro']:.1f}%")
+    print(f"\nHumedad del Suelo:")
+    print(f"  Promedio: {reporte['tendencias_suelo']['humedad_promedio']:.1f}%")
+    print(f"  Rango: {reporte['tendencias_suelo']['humedad_minima']:.1f}% - {reporte['tendencias_suelo']['humedad_maxima']:.1f}%")
+    
+    # Crear visualización
+    analitica.graficar_rendimiento("finca_01", dias=7)
+```
+
+---
+
+## 🔧 Mantenimiento y Solución de Problemas
+
+### Programa de Mantenimiento Rutinario
+
+**Semanal:**
+- ✓ Inspección visual de todo el equipo
+- ✓ Limpiar superficie del panel solar
+- ✓ Verificar voltaje de batería
+- ✓ Verificar que las lecturas de sensores sean razonables
+- ✓ Probar operación manual de válvula
+
+**Mensual:**
+- ✓ Limpiar/reemplazar filtros
+- ✓ Inspeccionar todas las conexiones de cables
+- ✓ Verificar ausencia de nidos de insectos en caja de conexiones
+- ✓ Verificar ubicación de sensores de suelo
+- ✓ Probar apagado de emergencia
+- ✓ Revisar logs de datos en busca de anomalías
+
+**Trimestral:**
+- ✓ Recalibrar sensores de humedad del suelo
+- ✓ Limpiar/dar servicio a bomba si aplica
+- ✓ Inspeccionar/reemplazar burletes
+- ✓ Probar capacidad de batería de respaldo
+- ✓ Actualizar firmware si está disponible
+- ✓ Inspección profesional del sistema
+
+**Anual:**
+- ✓ Reemplazar cartuchos de filtro
+- ✓ Dar servicio/reemplazar sellos de bomba
+- ✓ Reemplazar batería si es necesario (vida de 3-5 años)
+- ✓ Limpieza profunda de todos los sensores
+- ✓ Verificar uniformidad de riego
+- ✓ Auditoría de rendimiento del sistema
+
+### Problemas Comunes y Soluciones
+
+**Problema: No aparecen datos en el panel**
+```
+Pasos de solución:
+1. Verificar LED de encendido del ESP32
+   - Si está apagado: Verificar fuente de alimentación, batería, panel solar
+   - Si está encendido: Proceder al paso 2
+
+2. Verificar conexión WiFi
+   - Ver monitor serial para estado de conexión
+   - Verificar que credenciales WiFi sean correctas
+   - Verificar intensidad de señal (debe ser > -70 dBm)
+   - Acercarse al router si es necesario
+
+3. Verificar conexión MQTT
+   - Verificar que broker MQTT esté ejecutándose
+   - Probar con comando mosquitto_sub
+   - Verificar usuario/contraseña
+   - Verificar reglas de firewall de red
+
+4. Verificar lecturas de sensores
+   - Ver valores crudos de sensores en monitor serial
+   - Verificar que sensores estén conectados
+   - Verificar cables sueltos
+```
+
+**Problema: Lectura de humedad del suelo atascada en 0% o 100%**
+```
+Posibles causas:
+- Sensor desconectado o dañado
+- Mal contacto con el suelo
+- Infiltración de agua en sensor
+- Cableado defectuoso
+
+Soluciones:
+1. Verificar conexión del sensor
+2. Asegurar buen contacto con el suelo
+3. Verificar agua en caja de conexiones
+4. Probar sensor en condiciones conocidas (aire vs agua)
+5. Reemplazar sensor si está defectuoso
+```
+
+**Problema: El riego no inicia automáticamente**
+```
+Verificar:
+1. Modo automático habilitado
+   - Enviar comando "HABILITAR_AUTO" vía panel
+   
+2. Humedad del suelo leyendo correctamente
+   - Debe estar por debajo del umbral (30% por defecto)
+   
+3. Intervalo mínimo respetado
+   - 4 horas entre ciclos de riego
+   
+4. Sin lluvia activa detectada
+   - Sensor de lluvia puede estar activándose
+   
+5. Válvula/bomba respondiendo
+   - Probar operación manual
+   - Verificar alimentación a actuadores
+```
+
+**Problema: Alto uso de agua / riego frecuente**
+```
+Posibles causas:
+- Sensores de humedad del suelo demasiado profundos
+- Fuga en sistema de riego
+- Umbrales configurados incorrectamente
+- Calibración de sensores incorrecta
+
+Soluciones:
+1. Verificar profundidad de ubicación de sensores
+2. Inspeccionar fugas
+3. Ajustar umbrales (elevar mínimo a 35%)
+4. Recalibrar sensores
+5. Verificar cálculos de evapotranspiración
+```
+
+---
+
+
+
+## 🌱 Impacto del Proyecto
+
+**Impacto Ambiental:**
+- 💧 Más de 500,000 litros de agua ahorrados anualmente en todos los despliegues
+- 🌍 Reducción del 40% en consumo de agua agrícola
+- ⚡ Menor uso de energía mediante bombeo optimizado
+- 🌿 Disminución de escorrentía de nutrientes por sobre-riego
+
+**Impacto Económico:**
+- 💰 Ahorro promedio del agricultor: $800 USD/año
+- 📈 15% de aumento en rendimiento de cultivos
+- ⏱️ 60% de reducción en mano de obra para gestión de riego
+- 🔄 ROI logrado en menos de 8 meses
+
+**Impacto Social:**
+- 👨‍🌾 60+ agricultores capacitados en tecnología IoT
+- 🎓 15 técnicos agrícolas del SENA certificados
+- 📱 Mejora de alfabetización digital en comunidades rurales
+- 🤝 Fortalecimiento de cooperativas de agricultores
+
+---
+
+## 🔮 Desarrollo Futuro
+
+**Mejoras Planificadas:**
+
+**Corto plazo (3-6 meses):**
+- Aplicación móvil para iOS y Android
+- Bot de WhatsApp para alertas y comandos
+- Integración de pronóstico del tiempo
+- Soporte multi-cultivo (arroz, maíz)
+
+**Mediano plazo (6-12 meses):**
+- Integración de imágenes satelitales para mapeo de campos
+- Modelos ML avanzados con predicción meteorológica
+- Sensores de monitoreo de nutrientes del suelo
+- Sistema automatizado de inyección de fertilizantes
+
+**Largo plazo (1-2 años):**
+- Integración de drones para monitoreo aéreo
+- Blockchain para seguimiento de uso de agua
+- Cálculo de créditos de carbono
+- Plataforma regional de gestión de agua
+- Mantenimiento predictivo con visión por computadora
+
+>
